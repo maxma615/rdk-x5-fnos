@@ -23,9 +23,9 @@
   "in_place_update": {
     "from": "v0.3.2",
     "to": "v0.3.3",
-    "filename": "rdk-x5-fnos-v0.3.2-to-v0.3.3.pyz",
-    "bytes": 3549,
-    "sha256": "1b2fc582f57e4444f5586be8e6ad35afb19b13ea9413932c894d64118774f693"
+    "filename": "rdk-x5-fnos-v0.3.2-to-v0.3.3-wifi.pyz",
+    "bytes": 210079,
+    "sha256": "9dc1fcc303b7a103d1e72edf4122d4ba10096d441f15c32db553407d24823e41"
   },
   "previous": {
     "version": "v0.3.1",

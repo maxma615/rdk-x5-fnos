@@ -2,6 +2,7 @@
 
 import argparse
 from contextlib import contextmanager
+from dataclasses import dataclass
 import fcntl
 import hashlib
 import os
@@ -17,9 +18,18 @@ import zipfile
 BASE = b'v0.3.2\n'
 TARGET = b'v0.3.3\n'
 BASE_DIGEST = '6c91f145426dfc55ad9b03b448949f02d36394a30255cea021084b672d1dd5c6'
+BASE_DRIVER_DIGEST = '52a3d2eb9d2dec4663b40da3d8e10aa3b3eb4ff5c906959126f4a1b5bda41fd4'
+DRIVER_DIGEST = '83e88d11da3b0c0d38d3a4bb53623c928ab660e86d908dcb0a4bc5de19c03bfe'
+KERNEL_IMAGE_DIGEST = '608dbb9fe29e49ac1f10ca009f9004ff069c2c28260695806a2a1fc67a3312f0'
 RELEASE = Path('etc/fnos-x5/release')
 HELPER = Path('usr/lib/fnos-x5/quark_log_compat.py')
+DRIVER = Path('usr/lib/modules/6.18.0/kernel/drivers/net/wireless/aic8800/aic8800_fdrv/aic8800_fdrv.ko')
 STATE = Path('var/lib/fnos-x5/update-v0.3.3')
+LEGACY_DRIVER_BACKUP = Path('var/lib/fnos-x5/wifi-driver-backup/aic8800_fdrv.ko')
+
+
+def sha256(contents):
+    return hashlib.sha256(contents).hexdigest()
 
 
 def trusted_path(path, mode):
@@ -64,14 +74,27 @@ def atomic_write(path, contents, mode):
         Path(temporary).unlink(missing_ok=True)
 
 
+@dataclass(frozen=True)
+class ManagedFile:
+    path: Path
+    backup: Path
+    baseline: str
+    payload: bytes
+    legacy_backup: Path | None = None
+
+
 class Installation:
-    def __init__(self, root, payload):
+    def __init__(self, root, helper_payload, driver_payload):
         self.root = root
-        self.payload = payload
         self.release = root / RELEASE
-        self.helper = root / HELPER
         self.state = root / STATE
         self.backup = self.state / 'original-helper.py'
+        self.driver_backup = self.state / 'original-aic8800_fdrv.ko'
+        self.files = (
+            ManagedFile(root / HELPER, self.backup, BASE_DIGEST, helper_payload),
+            ManagedFile(root / DRIVER, self.driver_backup, BASE_DRIVER_DIGEST, driver_payload,
+                        root / LEGACY_DRIVER_BACKUP),
+        )
 
     @contextmanager
     def locked(self):
@@ -88,27 +111,39 @@ class Installation:
 
     def inspect(self):
         trust_parents(self.release, self.root)
-        trust_parents(self.helper, self.root)
         version = read_file(self.release)
         if version not in (BASE, TARGET):
             raise ValueError('This update requires the v0.3.2 or v0.3.3 RDK X5 image')
-        contents = read_file(self.helper)
-        original = hashlib.sha256(contents).hexdigest() == BASE_DIGEST
-        if not original and contents != self.payload:
-            raise ValueError(f'Unrecognized local file: {self.helper}')
-        return version, original, contents
+        files = []
+        for entry in self.files:
+            trust_parents(entry.path, self.root)
+            contents = read_file(entry.path)
+            original = sha256(contents) == entry.baseline
+            if not original and contents != entry.payload:
+                raise ValueError(f'Unrecognized local file: {entry.path}')
+            files.append((entry, contents, original))
+        return version, files
 
-    def original_backup(self):
-        original = read_file(self.backup, 0o600)
-        if hashlib.sha256(original).hexdigest() != BASE_DIGEST:
-            raise ValueError('Rollback backup failed checksum validation')
+    def original_backup(self, entry):
+        path = entry.backup
+        try:
+            original = read_file(path, 0o600)
+        except FileNotFoundError:
+            if entry.legacy_backup is None:
+                raise
+            path = entry.legacy_backup
+            trust_parents(path, self.root)
+            original = read_file(path, 0o600)
+        if sha256(original) != entry.baseline:
+            raise ValueError(f'Rollback backup failed checksum validation: {path}')
         return original
 
     def status(self):
-        version, original, _ = self.inspect()
-        if not original or version == TARGET:
-            self.original_backup()
-        if original != (version == BASE):
+        version, files = self.inspect()
+        for entry, _, original in files:
+            if not original:
+                self.original_backup(entry)
+        if any(original != (version == BASE) for _, _, original in files):
             return 'interrupted'
         return version.decode().strip()
 
@@ -116,25 +151,27 @@ class Installation:
         atomic_write(self.release, version, 0o644)
 
     def apply(self):
-        version, original, contents = self.inspect()
-        try:
-            self.original_backup()
-        except FileNotFoundError:
-            if not original or version != BASE:
-                raise ValueError('The original rollback backup is missing') from None
-            atomic_write(self.backup, contents, 0o600)
-        if original:
-            atomic_write(self.helper, self.payload, 0o644)
+        version, files = self.inspect()
+        for entry, contents, original in files:
+            try:
+                backup = self.original_backup(entry)
+            except FileNotFoundError:
+                if not original:
+                    raise ValueError(f'Rollback backup is missing: {entry.path}') from None
+                backup = contents
+            if not entry.backup.exists():
+                atomic_write(entry.backup, backup, 0o600)
+        for entry, _, original in files:
+            if original:
+                atomic_write(entry.path, entry.payload, 0o644)
         if version != TARGET:
             self.set_release(TARGET)
 
     def rollback(self):
-        version, original, _ = self.inspect()
-        if original and version == BASE:
-            return
-        backup = self.original_backup()
-        if not original:
-            atomic_write(self.helper, backup, 0o644)
+        version, files = self.inspect()
+        backups = [(entry, self.original_backup(entry)) for entry, _, original in files if not original]
+        for entry, backup in backups:
+            atomic_write(entry.path, backup, 0o644)
         if version != BASE:
             self.set_release(BASE)
 
@@ -146,6 +183,8 @@ def check_board():
     if (not model.startswith(b'D-Robotics RDK X5') or os.uname().release != '6.18.0'
             or not re.fullmatch(r'/dev/mmcblk[0-9]+p2 ext4', root_volume) or trim != '1.2.0701'):
         raise ValueError('Unsupported board, system partition, kernel or fnOS version')
+    if sha256(Path('/boot/Image').read_bytes()) != KERNEL_IMAGE_DIGEST:
+        raise ValueError('The kernel Image does not match the supported Wi-Fi module')
 
 
 def main():
@@ -158,12 +197,17 @@ def main():
         check_board()
         with zipfile.ZipFile(sys.argv[0]) as archive:
             payload = archive.read('quark_log_compat.py')
-        install = Installation(Path('/'), payload)
+            driver = archive.read('aic8800_fdrv.ko')
+        if sha256(driver) != DRIVER_DIGEST:
+            raise ValueError('Wi-Fi module in the update package failed checksum validation')
+        install = Installation(Path('/'), payload, driver)
         with install.locked():
             if args.action == 'apply':
                 install.apply()
             elif args.action == 'rollback':
                 install.rollback()
             print(install.status())
+            if args.action != 'status':
+                print('Reboot to load the on-disk Wi-Fi driver.', file=sys.stderr)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError, zipfile.BadZipFile) as error:
         parser.exit(1, f'Update stopped: {error}\n')

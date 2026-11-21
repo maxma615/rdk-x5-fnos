@@ -59,6 +59,4 @@ llvm-strip --strip-debug -o aic8800_fdrv.ko \
   "$kernel_output/drivers/net/wireless/aic8800/aic8800_fdrv/aic8800_fdrv.ko"
 ```
 
-测试板仅替换 `modinfo -n aic8800_fdrv` 指向的模块。安装前校验模块的 `vermagic` 和依赖并备份原文件，重启后用
-`cat /sys/module/aic8800_fdrv/srcversion` 核对加载的版本。驱动已在运行的机器上使用原来的 Wi-Fi 连接配置。
-测试模块摘要和加载版本见 `release.json`。回退驱动时，把原模块恢复至同一路径并重启。
+安装前核对模块的 `vermagic`、依赖和 [release.json](release.json) 中的摘要。使用构建结果制作[原地更新包](fnos/integration/in_place_update/README.md)，包会备份并替换驱动，回滚时还原。重启后用 `cat /sys/module/aic8800_fdrv/srcversion` 核对加载的版本。
