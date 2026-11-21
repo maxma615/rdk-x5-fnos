@@ -27,6 +27,27 @@ DRIVER = Path('usr/lib/modules/6.18.0/kernel/drivers/net/wireless/aic8800/aic880
 STATE = Path('var/lib/fnos-x5/update-v0.3.3')
 LEGACY_DRIVER_BACKUP = Path('var/lib/fnos-x5/wifi-driver-backup/aic8800_fdrv.ko')
 
+WIFI_POLICY = Path('etc/modprobe.d/fnos-x5-aic8800-performance.conf')
+CPU_UNIT = Path('etc/systemd/system/fnos-x5-performance.service')
+CPU_ENABLE = CPU_UNIT.parent / 'multi-user.target.wants' / CPU_UNIT.name
+CPU_UNIT_TARGET = Path('/') / CPU_UNIT
+POLICY_FILES = (
+    (WIFI_POLICY, b'# Keep X5 Wi-Fi enabled, without AIC8800 power saving.\n'
+                  b'options aic8800_fdrv ps_on=N\n'),
+    (CPU_UNIT, b"""[Unit]
+Description=Select the RDK X5 CPU performance governor
+ConditionPathIsDirectory=/sys/devices/system/cpu/cpufreq
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -ec 'for policy in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor; do test -w "$policy" && echo performance > "$policy"; done'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+"""),
+)
+
 
 def sha256(contents):
     return hashlib.sha256(contents).hexdigest()
@@ -124,6 +145,30 @@ class Installation:
             files.append((entry, contents, original))
         return version, files
 
+    def inspect_policy(self):
+        missing = []
+        for relative, expected in POLICY_FILES:
+            path = self.root / relative
+            trust_parents(path, self.root)
+            try:
+                contents = read_file(path)
+            except FileNotFoundError:
+                missing.append((path, expected))
+            else:
+                if contents != expected:
+                    raise ValueError(f'Unrecognized local file: {path}')
+
+        link = self.root / CPU_ENABLE
+        trust_parents(link, self.root)
+        try:
+            info = link.lstat()
+        except FileNotFoundError:
+            return missing, False
+        if (not stat.S_ISLNK(info.st_mode) or info.st_uid or info.st_gid
+                or link.readlink() != CPU_UNIT_TARGET):
+            raise ValueError(f'Unrecognized enable link: {link}')
+        return missing, True
+
     def original_backup(self, entry):
         path = entry.backup
         try:
@@ -143,7 +188,11 @@ class Installation:
         for entry, _, original in files:
             if not original:
                 self.original_backup(entry)
-        if any(original != (version == BASE) for _, _, original in files):
+        missing, enabled = self.inspect_policy()
+        expected = version == TARGET
+        if (any(original == expected for _, _, original in files)
+                or enabled != expected
+                or len(missing) != (0 if expected else len(POLICY_FILES))):
             return 'interrupted'
         return version.decode().strip()
 
@@ -152,6 +201,7 @@ class Installation:
 
     def apply(self):
         version, files = self.inspect()
+        missing, enabled = self.inspect_policy()
         for entry, contents, original in files:
             try:
                 backup = self.original_backup(entry)
@@ -164,14 +214,31 @@ class Installation:
         for entry, _, original in files:
             if original:
                 atomic_write(entry.path, entry.payload, 0o644)
+        for path, contents in missing:
+            atomic_write(path, contents, 0o644)
+        if not enabled:
+            link = self.root / CPU_ENABLE
+            link.symlink_to(CPU_UNIT_TARGET)
+            sync_dir(link.parent)
         if version != TARGET:
             self.set_release(TARGET)
 
     def rollback(self):
         version, files = self.inspect()
+        missing, enabled = self.inspect_policy()
         backups = [(entry, self.original_backup(entry)) for entry, _, original in files if not original]
         for entry, backup in backups:
             atomic_write(entry.path, backup, 0o644)
+        if enabled:
+            link = self.root / CPU_ENABLE
+            link.unlink()
+            sync_dir(link.parent)
+        missing_paths = {path for path, _ in missing}
+        for relative, _ in POLICY_FILES:
+            path = self.root / relative
+            if path not in missing_paths:
+                path.unlink()
+                sync_dir(path.parent)
         if version != BASE:
             self.set_release(BASE)
 
@@ -208,6 +275,6 @@ def main():
                 install.rollback()
             print(install.status())
             if args.action != 'status':
-                print('Reboot to load the on-disk Wi-Fi driver.', file=sys.stderr)
+                print('Reboot to load the Wi-Fi driver and CPU policy from disk.', file=sys.stderr)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError, zipfile.BadZipFile) as error:
         parser.exit(1, f'Update stopped: {error}\n')

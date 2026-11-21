@@ -43,6 +43,8 @@ class UpdateTest(unittest.TestCase):
             path = self.root / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
+        (self.root / 'etc/modprobe.d').mkdir()
+        (self.root / 'etc/systemd/system/multi-user.target.wants').mkdir(parents=True)
         self.install = update.Installation(self.root, NEW, NEW_DRIVER)
         self.install.state.mkdir(mode=0o700, parents=True)
 
@@ -62,6 +64,51 @@ class UpdateTest(unittest.TestCase):
         self.assertEqual((self.root / 'vol1/@homeassistant/config/configuration.yaml').read_bytes(), b'config')
         self.install.apply()
         self.assertEqual(self.install.status(), 'v0.3.3')
+
+    def test_performance_policy_is_installed_enabled_and_removed(self):
+        wifi = self.root / 'etc/modprobe.d/fnos-x5-aic8800-performance.conf'
+        unit = self.root / 'etc/systemd/system/fnos-x5-performance.service'
+        link = unit.parent / 'multi-user.target.wants' / unit.name
+        self.install.apply()
+        self.install.apply()
+        self.assertIn(b'options aic8800_fdrv ps_on=N\n', wifi.read_bytes())
+        self.assertIn(b'echo performance > "$policy"', unit.read_bytes())
+        self.assertEqual(link.readlink(), Path('/etc/systemd/system') / unit.name)
+        link.unlink()
+        self.assertEqual(self.install.status(), 'interrupted')
+        self.install.apply()
+        self.assertEqual(self.install.status(), 'v0.3.3')
+        self.install.rollback()
+        self.assertFalse(wifi.exists())
+        self.assertFalse(unit.exists())
+        self.assertFalse(link.is_symlink())
+
+    def test_existing_v033_without_performance_policy_can_be_updated(self):
+        self.install.apply()
+        wifi = self.root / 'etc/modprobe.d/fnos-x5-aic8800-performance.conf'
+        unit = self.root / 'etc/systemd/system/fnos-x5-performance.service'
+        link = unit.parent / 'multi-user.target.wants' / unit.name
+        link.unlink()
+        unit.unlink()
+        wifi.unlink()
+        self.assertEqual(self.install.status(), 'interrupted')
+        self.install.apply()
+        self.assertEqual(self.install.status(), 'v0.3.3')
+
+    def test_unrecognized_performance_policy_or_enable_link_aborts_before_changes(self):
+        wifi = self.root / 'etc/modprobe.d/fnos-x5-aic8800-performance.conf'
+        link = self.root / 'etc/systemd/system/multi-user.target.wants/fnos-x5-performance.service'
+        wifi.write_bytes(b'local policy')
+        with self.assertRaises(ValueError):
+            self.install.apply()
+        self.assertEqual(wifi.read_bytes(), b'local policy')
+        wifi.unlink()
+        link.symlink_to('/opt/local/custom.service')
+        with self.assertRaises(ValueError):
+            self.install.apply()
+        self.assertEqual(link.readlink(), Path('/opt/local/custom.service'))
+        self.assertEqual((self.root / update.HELPER).read_bytes(), OLD)
+        self.assertFalse(self.install.backup.exists())
 
     def test_interrupted_upgrade_can_be_rolled_back_or_resumed(self):
         for resume in (self.install.rollback, self.install.apply):
