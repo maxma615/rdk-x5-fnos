@@ -1,4 +1,4 @@
-"""Enable the Quark 1.1.20 launcher to fall back to its private log directory."""
+"""Repair the log directories used by supported Quark and qBittorrent launchers."""
 import hashlib
 import os
 from pathlib import Path
@@ -34,11 +34,11 @@ def repair(path=LAUNCHER, expected=ORIGINAL, anchor=ANCHOR, replacement=FALLBACK
             return False
     try:
         info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_gid or info.st_mode & 0o022:
+            return False
+        source = path.read_bytes()
     except FileNotFoundError:
         return False
-    if not stat.S_ISREG(info.st_mode) or info.st_uid or info.st_gid or info.st_mode & 0o022:
-        return False
-    source = path.read_bytes()
     if hashlib.sha256(source).hexdigest() != expected or source.count(anchor) != 1:
         return False
     fd, tmp = tempfile.mkstemp(dir=path.parent)
@@ -50,11 +50,16 @@ def repair(path=LAUNCHER, expected=ORIGINAL, anchor=ANCHOR, replacement=FALLBACK
         if (current.st_ino, current.st_ctime_ns) != (info.st_ino, info.st_ctime_ns):
             return False
         os.replace(tmp, path)
+    except FileNotFoundError:
+        # App Center can remove the launcher while this service is checking it.
+        return False
     finally:
         Path(tmp).unlink(missing_ok=True)
     return True
 
 
 if __name__ == '__main__':
-    repair()
-    repair(QBIT_LAUNCHER, QBIT_ORIGINAL, QBIT_ANCHOR, QBIT_REPLACEMENT)
+    if repair():
+        print('Applied private log fallback to Quark')
+    if repair(QBIT_LAUNCHER, QBIT_ORIGINAL, QBIT_ANCHOR, QBIT_REPLACEMENT):
+        print('Applied private log directory to qBittorrent')

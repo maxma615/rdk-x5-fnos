@@ -13,6 +13,10 @@
   <img alt="Linux 6.18.0" src="https://img.shields.io/badge/Linux-6.18.0-6d4aff?style=flat-square">
 </p>
 
+## v0.3.3 原地更新
+
+已安装本文 v0.3.2 镜像的 RDK X5 可以通过 SSH 更新到 v0.3.3，并使用同一个包回滚。更新保留 TF 卡数据卷、飞牛账号和 Home Assistant 配置。构建、校验和使用方法见 [原地更新说明](fnos/integration/in_place_update/README.md)。
+
 ## v0.3.2 快速开始
 
 1. 使用完整镜像 `rdk-x5-fnos-v0.3.2.img`，按容量确认目标 TF 卡后整盘写入。

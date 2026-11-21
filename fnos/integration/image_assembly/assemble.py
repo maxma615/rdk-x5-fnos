@@ -156,7 +156,7 @@ def write_text(path: Path, text: str, mode: int = 0o644) -> None:
 
 def stage_x5_release(root: Path) -> None:
     here = Path(__file__).parent
-    write_text(root / 'etc/fnos-x5/release', 'v0.3.2\n')
+    write_text(root / 'etc/fnos-x5/release', 'v0.3.3\n')
     write_text(root / 'usr/lib/fnos-x5/quark_log_compat.py',
                (here / 'quark_log_compat.py').read_text())
     for suffix in ('service', 'path'):
@@ -1084,7 +1084,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--rootfs-size", default="12G")
     ap.add_argument("--rootfs-uuid", default=None)
     ap.add_argument("--source-image-sha256", required=True)
-    ap.add_argument("--release", default="v0.3.2")
+    ap.add_argument("--release", default="v0.3.3")
     ap.add_argument("--runtime-sources", type=Path, help="pinned X5 runtime repositories; embed Wi-Fi firmware and codec/BPU libraries")
     ap.add_argument("--bpu-module", type=Path, help="exact reviewed legacy 6.18.0 BPU module; requires --runtime-sources")
     ap.add_argument("--home-acl-library", type=Path, help="embed household shared-data policy for native storage and application services")
