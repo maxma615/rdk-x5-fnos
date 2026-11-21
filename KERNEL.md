@@ -39,3 +39,26 @@ The kernel, 14 device trees and 940 in-tree modules were built on Linux.
 The bundled BPU I/O module is versioned separately. The r26 image has passed
 50 image checks. Native SMB, first boot and application regression remain
 subject to X5 hardware acceptance.
+
+## v0.3.3 AIC8800 SDIO Wi-Fi 修复
+
+在 v0.3.2 和 v0.3.3 使用的 Linux 6.18.0 X5 构建上，应用
+[`0010`](patches/rdk-x5-linux-6.18/0010-wifi-aic8800-balance-command-queue-lock.patch) 和
+[`0011`](patches/rdk-x5-linux-6.18/0011-wifi-aic8800-honor-d80-sdio-clock-limit.patch)。
+前一补丁保证固件命令队列进入故障状态后仍成对加锁和解锁。后一补丁让 D80 的 SDIO 初始化遵循 BSP 提供的时钟上限，同时保留已协商的较低速率。
+
+本次使用的 Image 摘要为 `608dbb9fe29e49ac1f10ca009f9004ff069c2c28260695806a2a1fc67a3312f0`，
+构建目录的 `.config` 摘要为 `8948b71418f4c69f346a8ac57548097500c07770e2ea0b9d2472781aa52b6d3a`。
+在匹配该内核的源码与输出目录中应用补丁，并重新构建模块。用完整的模块构建保留对 `cfg80211` 和 `aic8800_bsp` 导出符号的校验。
+
+```sh
+patch -d "$kernel_source" -p1 < "$repo/patches/rdk-x5-linux-6.18/0010-wifi-aic8800-balance-command-queue-lock.patch"
+patch -d "$kernel_source" -p1 < "$repo/patches/rdk-x5-linux-6.18/0011-wifi-aic8800-honor-d80-sdio-clock-limit.patch"
+make -C "$kernel_source" O="$kernel_output" ARCH=arm64 LLVM=1 modules
+llvm-strip --strip-debug -o aic8800_fdrv.ko \
+  "$kernel_output/drivers/net/wireless/aic8800/aic8800_fdrv/aic8800_fdrv.ko"
+```
+
+测试板仅替换 `modinfo -n aic8800_fdrv` 指向的模块。安装前校验模块的 `vermagic` 和依赖并备份原文件，重启后用
+`cat /sys/module/aic8800_fdrv/srcversion` 核对加载的版本。驱动已在运行的机器上使用原来的 Wi-Fi 连接配置。
+测试模块摘要和加载版本见 `release.json`。回退驱动时，把原模块恢复至同一路径并重启。
